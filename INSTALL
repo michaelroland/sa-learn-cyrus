@@ -1,0 +1,22 @@
+INSTALL - sa-learn-cyrus
+
+(1) Copy sa-learn-cyrus to directory within root's path, 
+    e.g. /usr/local/sbin
+
+(2) Copy the sample configuration file sa-learn-cyrus.conf.
+    A good place may be the configuration directory of SpamAssassin,
+    e.g. /etc/spamassassin
+
+(3) Customize the configuration file according to your needs.
+
+[The following steps are optional]
+
+(4) make-doc.sh (start it from this directory) will create the documentation
+    files in ./doc/
+
+(5) Copy the documentation files into the appropriate directories on your
+    system.
+
+Good luck!
+
+hjb :-?

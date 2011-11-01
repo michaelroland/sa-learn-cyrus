@@ -1,0 +1,149 @@
+Changelog -- sa-learn-cyrus
+
+    Version 0.3.5 (2011-11-02)
+
+      o Applied a patch from David Caldwell to use the --virtual-config-dir 
+        option of spamd. New parameter sa:virtual_config_dir
+        
+      o POD / man page updated.
+
+    Version 0.3.4 (2011-10-03)
+    
+      o To avoid learning from spam/ham directories containing no mails
+        every directory is checkd before handed over to sa-learn.
+        Learning on larger mail systems is now a lot faster.
+        Thanks to Timo Veith for this suggestion.
+
+      o Added support for Bayes storage in SQL database.
+        See config parameter sa:bayes_storage = berkely|sql
+
+      o sa:prefs_file is used to get the Berkely DB path in case of 
+        sa:bayes_storage = berkely. A missing entry there will no longer
+        cause an error. The default DB path is now '~/.spamassassin/bayes'.
+
+      o New config paramter sa:fix_db_permissions to enable/disable
+        file permissions in case of sa:bayes_storage = berkely.
+
+      o Added option '-s /bin/sh' to ipurge in order to work even if 
+        imap:user has no valid shell. Thanks to Albert Siersema
+
+      o Synchronization of the database may be performed only once after
+        all mails have been treated by sa-learn.
+        See new parameter sa:sync_once = yes|no
+        Thanks to Timo Veith for this suggestion.
+        
+      o Bugfix: Spam/Ham folders more than two level deep are now supported.
+        Thanks to David Caldwell.
+
+      o Prependig the ouput (log) with a tag (date, time, pid) can now
+        switched off to avoid additional tagging when piped to syslog.
+        See parameter global:log_with_tag. 
+
+      o Some minor bug fixes.  
+
+    Version 0.3.3 (2008-06-18)
+
+      o Bugfix: Base directory of imap spool corrected for the case where
+        "domain support" is used without "initial letters".
+        Thanks to Andreas Czerniak
+
+    Version 0.3.2 (2008-04-26)
+
+        o Bugfix: With imap:domains not empty (domain support activated)
+          the parser didn't find all mailboxes having the same local part.
+
+        o Log output now includes the domain names along with mailboxes.
+
+    Version 0.3.1 (2008-03-22)
+
+        o Changed the routines to make documentation files, to make them 
+          usable on Debian/etch, which uses an ancient Pod::Text module
+
+    Version 0.3.0 (2008-03-21)
+
+        o Getopt::Long: added --long --options support
+        
+        o use Pod::Usage: to use man page and --help with one single 
+          documentation
+        
+        o added option --man to print man page
+        
+        o added documention (POD) in the code
+
+        o added options --man-text, -man-html, man-mapage=section to create
+          man page documentation files
+        
+
+    Version 0.3.0rc1 (2008-02-12)
+    
+        o temp files are now managed by File::Temp
+
+        o use a lock file ti avoid race conditions
+
+        o command option -D for domain listst added
+
+
+    Version 0.2.6 (2008-02-06)
+
+        o Bugfixes in evaluation of parameters include_list,
+          include_regexp, exclude_list, exclude_regexp
+
+    
+    Version 0.2.5 (2008-02-04)
+
+        o Cyrus's domain support is now honored.
+          To use this option, choose
+            [imap]
+            domains = one.domain.tld another.domain.tld
+          Thanks to Robert Carnecky for suggestions and testing.
+        
+        o New option to simulate learning and purging of mails.
+          This may be handy for testing the setup. This can be activated in
+          the configuration file
+            [global]
+            simulate = no|yes
+          or with the command option -s.
+
+          
+    Version 0.2.4 (2007-07-29)
+
+        o Cyrus's 'unixhierarchysep' feature is now supported.
+          To activate this option, choose
+            [imap]
+            unixhierarchysep = yes
+          in the configuration file.
+          Thanks to Franz Mueller <franz@kite2fly.com> for this contribution.
+        
+        o Copyright statement added
+
+    Version 0.2.3 (2005-05-22)
+    
+        o Added a new option -d to run sa-learn in debug mode.
+          There's also an configuration parameter for this purpose
+          in section [sa] of the configuration file:
+
+          debug = no|yes
+
+
+    Version 0.2.2 (2004-12-15)
+
+        o The function parse_dir (from module File::Listing) has to 
+          evaluate the output of the `ls -l` command, which in turn 
+          may depend on the system configuration. To avoid these 
+          problems, the parse_dir funktion has been replaced with 
+          classical opendir/closedir to search for mailbox files.
+
+        o There's a new configuration parameter initial_letter in the 
+          section [imap] of the configuration file. If the imap spool 
+          has subdivisions with the initial letters of the mailbox 
+          names (default) this should be set to
+            initial_letter = yes 
+          Otherwise set 
+            initial_letter = no
+
+        o syslog stuff (which never had worked) has been removed.
+
+
+    Version 0.2.1 (2004-11-18)
+
+        o First published version
