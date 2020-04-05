@@ -8,6 +8,28 @@ This is a forked version of the original sa-learn-cyrus tool by Hans-Juergen Bei
 provides bugfixes and improvements and adds integration with Kolab.
 
 
+## INSTALLATION
+
+### Prerequisites
+
+This application requires `perl`, `spamassassin` and `cyrus-imapd`.
+
+If the Kolab integration should be used, `kolab` needs to be installed.
+
+### Install files
+
+Use
+
+    ./install.sh
+
+to install the application, man pages, and sample configuration.
+
+### Configuration
+
+The sample configuration is copied to `/etc/spamassassin/sa-learn-cyrus.conf`
+by default. Customize the configuration according to your needs.
+
+
 ## GET LATEST SOURCE
 
 Find documentation and grab the latest version on GitHub
