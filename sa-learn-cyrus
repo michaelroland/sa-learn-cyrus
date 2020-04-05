@@ -1,22 +1,37 @@
-#!/usr/bin/perl
-#
-# sa-learn-cyrus feeds spam and non-spam (ham) messages to sa-learn.
-# It's main purpose is to train SA's bayes database with spam/ham 
-# messages sorted by the mailbox owner into special subfolders.
-#
-# Copyright (C) 2004-2011 Hans-Juergen Beie <hjb@pollux.franken.de>
-#
-# This program is free software; you can redistribute it and/or modify it under 
-# the terms of the Artistic License 2.0 or the GNU General Public License as 
-# published by the Free Software Foundation; either version 2 of the license, 
-# or (at your option) any later version.
-#
-# -------------------------------------------------------------
+#!/usr/bin/env perl
+
+################################################################################
+## 
+## sa-learn-cyrus is an application that collects spam and non-spam (ham)
+## messages from Cryus IMAPd user mailbox folders and feeds them into sa-learn
+## to train the bayes database of SpamAssassin.
+## 
+## This is a forked version of the original sa-learn-cyrus tool by
+## Hans-Juergen Beie. It provides bugfixes and improvements and adds
+## integration with Kolab.
+## 
+## Copyright (C) 2004-2011 Hans-Juergen Beie <hjb@pollux.franken.de>
+## Copyright (C) 2020 Michael Roland <mi.roland@gmail.com>
+## 
+## This program is free software: you can redistribute it and/or modify
+## it under the terms of the GNU General Public License as published by
+## the Free Software Foundation, either version 3 of the License, or
+## (at your option) any later version.
+## 
+## This program is distributed in the hope that it will be useful,
+## but WITHOUT ANY WARRANTY; without even the implied warranty of
+## MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+## GNU General Public License for more details.
+## 
+## You should have received a copy of the GNU General Public License
+## along with this program.  If not, see <http://www.gnu.org/licenses/>.
+## 
+################################################################################
 
 my $me = 'sa-learn-cyrus';
 my $VERSION = '0.3.5';
 my $lupdate = '2011-11-02';
-my $author = 'hjb';
+my $author = 'hjb+MR';
 my $header = "$me-$VERSION ($author -- $lupdate)";
 my $basename = `basename $0`;
 chomp($basename);
@@ -27,7 +42,6 @@ use strict qw(vars);
 use Getopt::Long;
 use Pod::Usage;
 use File::Spec;
-use File::Temp;
 
 # -------------------------------------------------------------
 
@@ -38,7 +52,7 @@ $my_path =~ s/(.*)\/$/$1/;
 
 # -------------------------------------------------------------
 # Default configuration
-my %conf = (
+our %conf = (
     # - base -
     'basename'                  => $basename,
     'pid'                       => $$,
@@ -47,12 +61,11 @@ my %conf = (
     'config_file'               => '/etc/spamassassin/sa-learn-cyrus.conf',
     'my_full_name'              => $my_full_name,
     'my_path'                   => $my_path,
+    'verbose'                   => 0,
 
     # [global]
-    'global:verbose'            => 1,
+    'global:verbose'            => 0,
     'global:simulate'           => 'no',
-    'global:tmp_dir'            => '',
-    'global:tmp_file'           => '',
     'global:lock_file'          => "/var/lock/$me\.lock",
     'global:log_with_tag'       => 'yes',
 
@@ -90,14 +103,12 @@ my %conf = (
 
 # -------------------------------------------------------------
 # exit codes
-my %EX = (
+our %EX = (
     'ex_OK'                => 0,
     'ex_NoMailboxesFound'  => 1,  # nothing to do
     'ex_SytaxError'        => -1, # cmd line error
     'ex_NoConfigFile'      => -2, # config_file not readable
     'ex_ConfigError'       => -3, # error in config_file
-    'ex_TmpDirNotFound'    => -4, # tmp_dir not found
-    'ex_MissingTmpDir'     => -5, # tmp_dir not specified
     'ex_ProcLocked'        => -6, # there is another sa-lean-cyrus running
     'ex_SAConfNotFound'    => -7, # SA configuration not found
     'ex_PermissionDenied'  => -8, # only root is allowed to execute this program
@@ -110,7 +121,7 @@ $| = 1;                # flush output imediately
 # parse cmd line
 #
 my $args = join(' ', @ARGV);
-my %OPT = ();
+our %OPT = ();
 Getopt::Long::Configure ("bundling");
 unless ( GetOptions(\%OPT, 
                     'help|h', 'man', 'version|V', 'verbose|v=i', 
@@ -156,7 +167,7 @@ if ( $OPT{'version'} ) {
 };
 
 if ( $OPT{'man-manpage'} ) {
-    make_manpage(\%conf,$OPT{'man-manpage'});
+    make_manpage(\%conf, $OPT{'man-manpage'});
     bye('ex_OK', '');
 };
 
@@ -171,32 +182,35 @@ if ( $OPT{'man-text'} ) {
 };
 
 if ( $OPT{'config'} ) {
-    if (-r $OPT{'config'}) {
+    if ( -r $OPT{'config'} ) {
         $conf{'config_file'} = $OPT{'config'};
     } else {
         bye('ex_NoConfigFile', "Configuration file '$OPT{'config'}' not readable: $!");
     }
 };
 
-log_msg('info', $header);
+# verbosity
+if ( $OPT{'verbose'} ) {
+    $conf{'verbose'} = $OPT{'verbose'};
+}
 
-bye('ex_PermissionDenied', "Only root can run $me") if $< != 0;
+log_msg('notice', $header);
+
+bye('ex_PermissionDenied', "Only root can run $me") unless ( $< == 0 );
 
 read_config(\%conf) or bye('ex_ConfigError', "Error reading config file '$conf{config_file}'");
+
+# verbosity
+if ( $conf{'global:verbose'} and ( $conf{'global:verbose'} > $conf{'verbose'}) ) {
+    $conf{'verbose'} = $conf{'global:verbose'};
+}
+log_msg('info', "Verbosity level: $conf{'verbose'}");
 
 # check bayes_storage
 $conf{'sa:bayes_storage'} = lc($conf{'sa:bayes_storage'});
 unless ( $conf{'sa:bayes_storage'} =~ /^(berkely|sql)/ ) {
     bye('ex_ConfigError', "Unknown value of option bayes_storage = $conf{'sa:bayes_storage'}. Known values are 'berkely' and 'sql'.");
 }
-
-# verbositiy
-unless ( $OPT{'verbose'} ) {
-    if ( defined $conf{'global:verbose'} ) {
-        $OPT{'verbose'} = $conf{'global:verbose'};
-    }
-}
-log_msg('info', "Verbose level: $OPT{'verbose'}") if $OPT{'verbose'};
 
 # mailboxes
 if ( @user_names ) {
@@ -207,58 +221,39 @@ if ( @user_names ) {
     $conf{'mailbox:exclude_regexp'} = '.*';
 }
 
-# global:tmp_file (depracted)
-if ( $conf{'global:tmp_file'} ) {
-    log_msg('warn', "Paramater 'gobal:tmp_file' is depracted. Use 'global:tmp_dir' instead!");
-    unless ( $conf{'global:tmp_dir'} ) {
-    # take tmp_dir from tmp_file for backward compatibility
-    my ($vol,$dir,$file) = File::Spec->splitpath($conf{'global:tmp_file'}); 
-        $conf{'global:tmp_dir'} = File::Spec->catpath($vol,$dir,'');
-    log_msg('warn', "Setting global:tmp_dir = $conf{'global:tmp_dir'}");
-    }
-}
-
-# global:tmp_dir
-if ( $conf{'global:tmp_dir'} ) {
-    bye ('ex_TmpDirNotFound', "Cannot find tmp_dir $conf{'global:tmp_dir'}") unless -d $conf{'global:tmp_dir'};
-} else {
-    bye('ex_MissingTmpDir', "Missing tmp_dir.");
-}
-
 # sa:debug
 if ( $OPT{'sa-debug'} ) {
     $conf{'sa:debug'} = 'yes';
-    log_msg('info', "SA debug mode enabled");
+    log_msg('notice', "SA debug mode enabled");
 }
 
 if ( $OPT{'simulate'} ) {
     $conf{'global:simulate'} = 'yes';
-} else {
-    $conf{'global:simulate'} = lc($conf{'global:simulate'});
 }
-log_msg('info', "Running in simulation mode") if $conf{'global:simulate'} eq 'yes';
+my $simulate = ($conf{'global:simulate'} =~ /^[yY]/);
+log_msg('notice', "Running in simulation mode") if ( $simulate );
 
 # imap:domains
-if ( $OPT{D} ) {
-    $conf{'imap:domains'} = $OPT{D};
+if ( $OPT{'imap-domains'} ) {
+    $conf{'imap:domains'} = $OPT{'imap-domains'};
 }
-log_msg('info', "Scanning mailboxes in domains '$conf{'imap:domains'}'") if ( $conf{'imap:domains'} ne '' ) && $OPT{'verbose'};
+log_msg('notice', "Scanning mailboxes in domains '$conf{'imap:domains'}'") if ( $conf{'imap:domains'} ne '' );
 
 # check if we are locked
-if ( my $pid = we_are_locked(\%conf) ) {
+if ( my $pid = we_are_locked() ) {
     bye('ex_ProcLocked', "There is another $me (pid = $pid) running.");
 }
 
-create_lock_file(\%conf);
+create_lock_file();
 
-# read SA configuraion
-if ( $conf{'sa:bayes_storage'} eq 'berkely' && !$conf{'sa:virtual_config_dir'} ) {
-    read_sa_config(\%conf) or bye('ex_SANotFound', "Check your configuration!");
-}
-
-if ( $conf{'sa:virtual_config_dir'} && $conf{'sa:fix_db_permissions'} =~ /^[yY]/ ) {
+if ( $conf{'sa:virtual_config_dir'} and ($conf{'sa:fix_db_permissions'} =~ /^[yY]/) ) {
     log_msg('warn', 'virtual_config_dir is incompatible with fix_db_permissions. Automatically disabling fix_db_permissions.');
     $conf{'sa:fix_db_permissions'} = 'no';
+}
+
+# read SA configuraion
+if ( ($conf{'sa:bayes_storage'} =~ /^berkely/) and ($conf{'sa:fix_db_permissions'} =~ /^[yY]/) and !$conf{'sa:bayes_path'} ) {
+    read_sa_config() or bye('ex_SANotFound', "Check your configuration!");
 }
 
 my %mailboxes = find_mailboxes(\%conf);
@@ -266,7 +261,6 @@ unless (keys %mailboxes) {
     bye ('ex_NoMailboxesFound', "No matching mailboxes found. There's nothing to do for me.");
 }
 
-my $simulate = ( $conf{'global:simulate'} eq 'yes') ;
 my $mails_learned = 0;	# total count of learned mails
 
 foreach my $key (sort keys %mailboxes) {
@@ -277,7 +271,7 @@ foreach my $key (sort keys %mailboxes) {
     my $imap_unixhierarchysep = ( $conf{'imap:unixhierarchysep'} =~ /^[yY]/ ) ? "/" : ".";
     my $imap_mail_box = 'user' . $imap_unixhierarchysep . $user;
     if ( -d $imap_mail_path ) {
-        log_msg('info', "Mailbox '$user_domain'") if $OPT{'verbose'} > 0;
+        log_msg('notice', "Mailbox '$user_domain'");
         for my $learn ('spam' , 'ham') {
             my $learn_folder = $conf{"mailbox:$learn" . '_folder'};
             # if unixhierarchy is set, veryify folderstring [FM]
@@ -286,173 +280,115 @@ foreach my $key (sort keys %mailboxes) {
             $learn_path =~ s/\./\//g;
             $learn_folder = "$imap_mail_box$imap_unixhierarchysep$learn_folder";
             $learn_path = $imap_mail_path . '/' . $learn_path;
-            my $mail_cnt = 0;
-            if ( -d $learn_path ) {
-                my @mails = find_mails($learn_path);
-                $mail_cnt = @mails;
-                $mails_learned += $mail_cnt;
-                log_msg('info', "  $mail_cnt mails found in $learn folder '$learn_folder'") if $OPT{'verbose'} > 0;
-            } else {
-                log_msg('info', "  No $learn folder '$learn_folder'") if $OPT{'verbose'} > 0;
+
+            my $virtual_config_dir;
+            if ( $conf{'sa:virtual_config_dir'} ) {
+                $virtual_config_dir = $conf{'sa:virtual_config_dir'};
+                $virtual_config_dir =~ s/%%/%/g;
+                $virtual_config_dir =~ s/%l/$user/g;
+                $virtual_config_dir =~ s/%d/$domain/g;
+                $virtual_config_dir =~ s/%u/$user_domain/g;
             }
-            
-            if ( $mail_cnt ) {
-                my $virtual_config_dir;
-                if ($conf{'sa:virtual_config_dir'}) {
-                    $virtual_config_dir = $conf{'sa:virtual_config_dir'};
-                    $virtual_config_dir =~ s/%%/%/g;
-                    $virtual_config_dir =~ s/%l/$user/g;
-                    $virtual_config_dir =~ s/%d/$domain/g;
-                    $virtual_config_dir =~ s/%u/$user_domain/g;
-                }
-                log_msg('info', "  Learning $learn from folder '$learn_folder' in path '$learn_path'.") if $OPT{'verbose'} > 0;
-                # sa-learn command parameters
-                my @args;
-                my ($tmp, $tmp_file)  = new_temp_file(\%conf);
-                $args[0] = $conf{'sa:learn_cmd'};
-                $args[0] .= " --debug" if $conf{'sa:debug'} =~ /^[yY]/;
-                $args[0] .= " --siteconfigpath=$conf{'sa:site_config_path'}";
-                $args[0] .= " --prefspath=$conf{'sa:prefs_file'}";
-                $args[0] .= " --no-sync" if $conf{'sa;sync_once'};
-                $args[0] .= ' --' . $learn; 
-                $args[0] .= " --dir $learn_path";
-                $args[0] .= " --username='$user'" if $conf{'sa:virtual_config_dir'};
-                $args[0] .= " --dbpath=$virtual_config_dir/bayes" if $conf{'sa:virtual_config_dir'};
-                $args[0] .= " 1>$tmp_file";
-                $args[0] .= ' 2>&1';
+            log_msg('notice', "  Learning $learn from folder '$learn_folder' in path '$learn_path'.");
+            # sa-learn command parameters
+            my $cmd = $conf{'sa:learn_cmd'};
+            $cmd .= ' --' . $learn;
+            $cmd .= ' --debug' if ( $conf{'sa:debug'} =~ /^[yY]/ );
+            $cmd .= " --siteconfigpath='$conf{'sa:site_config_path'}'" if ( $conf{'sa:site_config_path'} );
+            $cmd .= " --prefspath='$conf{'sa:prefs_file'}'" if ( $conf{'sa:prefs_file'} );
+            $cmd .= ' --no-sync' if ( $conf{'sa:sync_once'} =~ /^[yY]/ );
+            $cmd .= " --dbpath='$virtual_config_dir/bayes'" if ( $conf{'sa:virtual_config_dir'} and ($conf{'sa:bayes_storage'} =~ /^berkely/) );
+            $cmd .= " --username='$user'" if ( $conf{'sa:virtual_config_dir'} );
+            $cmd .= " '$learn_path'";
+            $cmd .= ' 2>&1';
 
-                log_msg('info', "  Executing '@args'") if $OPT{'verbose'} > 2;
-                
-                my $result = 0;
-                if ( $simulate ) {
-                    log_msg('info', "  Simulate: '@args'");
-                    unlink($tmp);
-                } else {
-                    $result = system(@args);
-                    if ( open($tmp, $tmp_file) ) {
-                        while(<$tmp>) {
-                            chomp;
-                            log_msg('info', "  sa-learn> $_");
-                        }
-                        close($tmp);
-                        unlink($tmp_file);
-                    } else {
-                        log_msg('err', "  Cannot read from '$tmp_file': $!");
-                   }
-                }
-                if ( $result == 0 ) {
-                    if ( $conf{"mailbox:remove_$learn"} =~ /^[yY]/ ) {
-                        # delete learned mails
-                        log_msg('info', "  Purging learned $learn mails from folder '$learn_folder'") if $OPT{'verbose'} > 0;
-                        my @args;
-                        my ($tmp, $tmp_file)  = new_temp_file(\%conf);
-                        my $cmd =  "$conf{'imap:purge_cmd'} -f -b 0 $learn_folder";
-                        $cmd .= '@' . $domain unless $domain eq '';
-                        $args[0] = "su $conf{'imap:user'} -s /bin/sh -c '$cmd'"; 
-                        $args[0] .= " 1>$tmp_file";
-                        $args[0] .= " 2>&1";
-                        log_msg('info', "  Executing '@args'") if $OPT{'verbose'} > 2;
-                        if ( $simulate ) {
-                             log_msg('info', "  Simulate: '@args'");
-                             unlink($tmp);
-                        } else {   
-                            $result = system(@args);
-                            if ( open($tmp, $tmp_file) ) {
-                                while(<$tmp>) {
-                                    chomp;
-                                    log_msg('info', "  ipurge> $_") unless /Permission denied/;
-                                }
-                                close($tmp);
-                                unlink($tmp);
-                            } else {
-                                log_msg('err', "  Cannot read from '$tmp_file': $!");
-                            }
-                        }
-                        log_msg('error', "  Purging learned $learn mails using command '@args' failed: $?") unless $result == 0 ;
+            log_msg('debug', "  Executing '$cmd'");
+            my $do_purge = 0;
+            if ( $simulate ) {
+                log_msg('notice', "  Simulate: '$cmd'");
+                $do_purge = 1;
+                $mails_learned += 1;
+            } elsif ( open(my $fh, "-|", $cmd) ) {
+                while (<$fh>) {
+                    chomp;
+                    my $line = $_;
+                    log_msg('notice', "  sa-learn> $line");
+                    if ( $line =~ /Learned\s+tokens\s+from\s+(\d+)\s+message/ ) {
+                        $mails_learned += int($1);
                     }
-                } else {
-                    log_msg('error', "  Learning $learn using command '@args' failed: $?");
                 }
-
+                close($fh);
+                if ( $? == 0 ) {
+                    $do_purge = 1;
+                } else {
+                    log_msg('error', "  Learning $learn using command '$cmd' failed: $?");
+                }
+            } else {
+                log_msg('error', "  Failed to run sa:learn_cmd '$cmd': $!");
+            }
+            if ( $do_purge and ($conf{'mailbox:remove_' . $learn} =~ /^[yY]/) ) {
+                # delete learned mails
+                log_msg('notice', "  Purging learned $learn mails from folder '$learn_folder'");
+                purge_mailbox_folder($learn_path);
             }
         }
     } else {
-        log_msg('info', "No mailbox '$user_domain' found in '$imap_mail_path'") if $OPT{'verbose'} > 0;
+        log_msg('notice', "No mailbox '$user_domain' found in '$imap_mail_path'");
     }
 }
 
-if ( ($conf{'sa:bayes_storage'} eq 'berkely') && ($conf{'sa:fix_db_permissions'} =~ /^[yY]/) ) {
+if ( ($conf{'sa:bayes_storage'} eq 'berkely') and ($conf{'sa:fix_db_permissions'} =~ /^[yY]/) ) {
     # set uid/gid of bayes tokens file
     # this may prevent permission problems for spamd
     my $tokens = $conf{'sa:bayes_path'} . $conf{'sa:tokens'};
     if ( -e $tokens ) {
-        log_msg('info', "Tokens in '$tokens'") if $OPT{'verbose'} > 1;
+        log_msg('info', "Tokens in '$tokens'");
         my $owner_group = "$conf{'sa:user'}:$conf{'sa:group'}";
         unless ( $owner_group eq ':' ) {
             # chmod user:group tokens-file
-            log_msg('info', "Changing ownership of '$tokens' to '$owner_group'") if $OPT{'verbose'} > 0;
-            my $result = 0;
-            my @args;
-            my ($tmp, $tmp_file) = new_temp_file(\%conf);
-            $args[0] = "chown $owner_group $tokens";
-            $args[0] .= " 1>$tmp_file";
-            $args[0] .= ' 2>&1';
-            log_msg('info', "  Executing '@args'") if $OPT{'verbose'} > 2;
+            log_msg('notice', "Changing ownership of '$tokens' to '$owner_group'");
+            my $cmd = "chown $owner_group '$tokens'";
+            $cmd .= ' 2>&1';
+            log_msg('debug', "  Executing '$cmd'");
             if ( $simulate ) {
-                log_msg('info', "  Simulate: '@args'");
-                unlink($tmp);
-            } else {
-                $result = system(@args);
-                if ( open($tmp, $tmp_file) ) {
-                    while(<$tmp>) {
-                        chomp;
-                        log_msg('info', "  chown> $_");
-                    }
-                    close($tmp);
-                    unlink($tmp);
-                } else {
-                    log_msg('err', "  Cannot read from '$tmp_file': $!");
+                log_msg('notice', "  Simulate: '$cmd'");
+            } elsif ( open(my $fh, "-|", $cmd) ) {
+                while (<$fh>) {
+                    chomp;
+                    log_msg('notice', "  chown> $_");
                 }
-            }
-            unless ( $result == 0 ) {
-                log_msg('error', "Changing ownership of '$tokens' using command '@args' failed: $?");
+                close($fh);
+                if ( $? != 0 ) {
+                    log_msg('error', "  Changing ownership of '$tokens' using command '$cmd' failed: $?");
+                }
+            } else {
+                log_msg('error', "  Changing ownership of '$tokens' using command '$cmd' failed: open failed");
             }
         }
     } else {
-        log_msg('info', "No tokens '$tokens' found.") if $OPT{'verbose'} > 1;
+        log_msg('info', "No tokens '$tokens' found.");
     }
 }
 
-if ( $conf{'sa:sync_once'} && $mails_learned ) {
+if ( ($conf{'sa:sync_once'} =~ /^[yY]/) and $mails_learned ) {
     # sync database
-    log_msg('info', "Synchronizing Bayes database...") if $OPT{'verbose'} > 0;
-    my $result = 0;
-    my @args;
-    my ($tmp, $tmp_file) = new_temp_file(\%conf);
-    $args[0] = $conf{'sa:learn_cmd'};
-    $args[0] .= " --debug" if $conf{'sa:debug'} =~ /^[yY]/;
-    $args[0] .= " --sync";
-    $args[0] .= " 1>$tmp_file";
-    $args[0] .= ' 2>&1';
+    log_msg('info', "Synchronizing Bayes database...");
+    my $cmd = $conf{'sa:learn_cmd'};
+    $cmd .= " --debug" if ( $conf{'sa:debug'} =~ /^[yY]/ );
+    $cmd .= " --sync";
+    $cmd .= ' 2>&1';
 
-    log_msg('info', "  Executing '@args'") if $OPT{'verbose'} > 2;
-    
-    my $result = 0;
+    log_msg('debug', "  Executing '$cmd'");
     if ( $simulate ) {
-        log_msg('info', "  Simulate: '@args'");
-        unlink($tmp);
+        log_msg('notice', "  Simulate: '$cmd'");
+    } elsif ( open(my $fh, "-|", $cmd) ) {
+        while (<$fh>) {
+            chomp;
+            log_msg('notice', "  sa-learn> $_");
+        }
+        close($fh);
     } else {
-        $result = system(@args);
-        if ( open($tmp, $tmp_file) ) {
-            while(<$tmp>) {
-                chomp;
-                log_msg('info', "  sa-learn> $_");
-            }
-            close($tmp);
-            unlink($tmp_file);
-        } else {
-            log_msg('err', "  Cannot read from '$tmp_file': $!");
-       }
+        log_msg('error', "  Failed to run sa:learn_cmd '$cmd': $!");
     }
 }
 
@@ -471,12 +407,11 @@ sub bye {
         log_msg('error', '*** aborted ***');
     } else {
         if ( $conf{'lock_created'} ) {
-            log_msg('info', "Removing lock file '$conf{'global:lock_file'}'") if $OPT{'verbose'} > 2;
+            log_msg('debug', "Removing lock file '$conf{'global:lock_file'}'");
             unlink($conf{'global:lock_file'});
         }
         log_msg('info', "$msg") if $msg;
     }
-    File::Temp::cleanup();
     exit $err;
 }
 
@@ -487,23 +422,32 @@ sub bye {
 sub log_msg {
     my ($level, $msg) = @_;
 
-    $level = lc($level);
-    my $log_with_tag = $conf{'global:log_with_tag'} =~ /^[yY]/;
-    my $label = iso_dts() . ' ' . $conf{'me'} . '[' . $conf{'pid'} . ']';
+    my $log_with_tag = ( $conf{'global:log_with_tag'} =~ /^[yY]/ );
+    my $label = '';
+    if ( $log_with_tag ) {
+        $label .= iso_dts() . ' ' . $conf{'me'} . '[' . $conf{'pid'} . ']';
+    }
+    if ( $level ne '' ) {
+        $level = lc($level);
+        $label .= " $level";
+    }
+    if ( $label ne '' ) {
+        $label .= ": ";
+    }
     if ( $level =~ /err|warn/ ) {
-        if ( $log_with_tag ) {
-            warn "$label $level: $msg\n";
-        } else {
-            warn "$level: $msg\n";
-        }
+        warn "$label$msg\n";
     } else {
-        if ( $log_with_tag ) {
-            print "$label: $msg\n";
-        } else {
-            print "$msg\n";
+        if ( $conf{'verbose'} < 1 ) {
+            return;
+        } elsif ( $conf{'verbose'} < 2 ) {
+            return if ( $level =~ /info|debug/ );
+        } elsif ( $conf{'verbose'} < 3 ) {
+            return if ( $level =~ /debug/ );
         }
+        print "$label$msg\n";
     }
 }
+
 
 #---------------------------------------------------------------
 #
@@ -513,7 +457,8 @@ sub iso_dts {
     my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime;
     my $now = sprintf ("%04d-%02d-%02d %02d:%02d:%02d", $year+1900, $mon+1, $mday, $hour, $min, $sec);
     return $now;
-};
+}
+
 
 #---------------------------------------------------------------
 #
@@ -523,68 +468,49 @@ sub trim {
     my ($string) = @_;
 
     $string =~ s/^\s+//;
-        $string =~ s/\s+$//;
-        return $string;
-};
+    $string =~ s/\s+$//;
+    return $string;
+}
+
 
 #---------------------------------------------------------------
 #
 # create lock file
 #
 sub create_lock_file {
-     my ($conf) = @_;
-
-     $conf->{'lock_created'} = 0;
-     return if $conf->{'global:simulate'} eq 'yes';
-     log_msg('info', "Creating lock file '$conf->{'global:lock_file'}'") if $OPT{'verbose'} > 1;
-     open(LF, ">$conf->{'global:lock_file'}") or bye('ex_LockFailed', "Cannot create lock file '$conf->{'global:lock_file'}': $!");
-     print LF "$conf->{'pid'}\n";
-     close (LF);
-     $conf->{'lock_created'} = 1;
+     $conf{'lock_created'} = 0;
+     return if ( $conf{'global:simulate'} eq 'yes' );
+     log_msg('info', "Creating lock file '$conf{'global:lock_file'}'");
+     open(my $fh, ">$conf{'global:lock_file'}") or bye('ex_LockFailed', "Cannot create lock file '$conf{'global:lock_file'}': $!");
+     print $fh "$conf{'pid'}\n";
+     close($fh);
+     $conf{'lock_created'} = 1;
 }
+
 
 #---------------------------------------------------------------
 #
 # check if we are locked
 #
 sub we_are_locked {
-    my($conf) = @_;
-
     my $pid = '???';
-    my $lock_file = $conf->{'global:lock_file'};
-    return undef unless -f $lock_file;
+    my $lock_file = $conf{'global:lock_file'};
+    return undef unless ( -f $lock_file );
     
-    #
     # we are locked, get the pid ...
-    #
-    if ( open (LF, $lock_file) ) {
-        while (<LF>) {
+    if ( open(my $fh, $lock_file) ) {
+        while (<$fh>) {
             chomp;
             $pid = $_;
+            last if ( $pid ne '' );
         }
-        close(LF);
+        close($fh);
     } else {
         log_msg('warn', "Cannot open lock file $lock_file: $!");
     }
     return $pid;
 }
 
-#---------------------------------------------------------------
-#
-# create new temp file object
-#
-sub new_temp_file {
-    my ($conf) = @_;
-
-    my $tmp = new File::Temp(
-        TEMPLATE => $conf->{'me'} . '-XXXXX',
-        DIR => $conf->{'global:tmp_dir'},
-        SUFFIX => '.' . $conf->{'pid'},
-    );
-    my $tmp_file = $tmp->filename;
-    log_msg('info', "New tmp_file '$tmp_file'") if $OPT{'verbose'} > 2;
-    return ($tmp, $tmp_file);
-}
 
 #---------------------------------------------------------------
 #
@@ -597,39 +523,39 @@ sub read_config {
 
     my $conf_file = $config->{config_file};
     
-    unless ( open (CNF, $conf_file) ) {
-        log_msg('err', "Cannot open config file '$conf_file': $!");
-        return undef;
-    }
+    if ( open(my $fh, $conf_file) ) {
+        log_msg('info', "Reading config file '$conf_file'");
 
-    log_msg('info', "Reading config file '$conf_file'") if $OPT{'verbose'} > 1;
+        my $section = '';
+        while (<$fh>) {
+            chomp;
+            my $line = trim($_);            # trim white space
+            next if ( $line eq '' );        # ignore empty lines
+            next if ( $line =~ /^[#;]/ );   # ignore comment lines
 
-    my $section = '';
-    while ( <CNF> ) {
-        chomp;
-        my $line = trim($_);        # trim white space
-        next if $line eq '';        # ignore empty lines
-        next if $line =~ /^[#;]/;   # ignore comment lines
-
-        my $sec = get_section($line);
-        if ( $sec ) {
-            # it's a section, something like '[foobar]'
-            $section = $sec;
-            log_msg('info', "[$section]") if $OPT{'verbose'} > 2;
-        } elsif ( $section ne '' ) {
-            # check for 'param = value' pairs
-            my ($param, $value);
-            if ( ($param, $value) = get_param_value($line) ) {
-                # it's a line like 'param = value'
-                $value = unquote($value);
-                $config->{"$section:$param"} = $value;
-                log_msg('info', "  $section:$param >$value<") if $OPT{'verbose'} > 2;
+            my $sec = get_section($line);
+            if ( $sec ) {
+                # it's a section, something like '[foobar]'
+                $section = $sec;
+                log_msg('debug', "Parsing section [$section]");
+            } elsif ( $section ne '' ) {
+                # check for 'param = value' pairs
+                if ( my ($param, $value) = get_param_value($line) ) {
+                    # it's a line like 'param = value'
+                    $value = unquote($value);
+                    $config->{"$section:$param"} = $value;
+                    log_msg('debug', "  Option '$section:$param' set to '$value'");
+                }
             }
         }
+        close($fh);
+        return $config;
+    } else {
+        log_msg('error', "Cannot open config file '$conf_file': $!");
+        return undef;
     }
-    close(CNF);
-    return $config;
 }
+
 
 #---------------------------------------------------------------
 #
@@ -638,12 +564,12 @@ sub read_config {
 #
 sub get_section {
     my ($string) = @_;
-        if ( $string =~ s/^\[(.+)\]$/$1/ ) {
-            return trim($1);
-        } else {
-            return undef;
-        };
-};
+    if ( $string =~ /^\[(.+)\]$/ ) {
+        return trim($1);
+    } else {
+        return undef;
+    }
+}
 
 
 #---------------------------------------------------------------
@@ -652,14 +578,15 @@ sub get_section {
 #
 sub get_param_value {
     my ($string) = @_;
-    #my ($param, $value) = split(/\s*=\s*/, $string, 2);
-    my ($param, $value) = split(/\s*=\s*/, $string);
+    my ($param, $value) = split(/\s*=\s*/, $string, 2);
+    #my ($param, $value) = split(/\s*=\s*/, $string);
     if ( $param and ($value ne '') ) {
         return ($param, $value);
     } else {
         return undef;
-    };
-};
+    }
+}
+
 
 #---------------------------------------------------------------
 #
@@ -671,34 +598,38 @@ sub unquote {
     $string =~ s/^\'(.*)\'$/$1/;
     $string =~ s/^\"(.*)\"$/$1/;
     return $string;
-};
+}
+
 
 #---------------------------------------------------------------
 #
 # read SA config
 #
 sub read_sa_config {
-    my ($conf) = @_;
-    
-    my $conf_file = $conf->{'sa:prefs_file'};
-    open(SAC, $conf_file) or bye('ex_SAConfNotFound', "Cannot open '$conf_file': $!");
-    log_msg('info', "Reading SA config '$conf_file'") if $OPT{'verbose'} > 0;
-    while( <SAC> ) {
+    my $conf_file = $conf{'sa:prefs_file'};
+    open(my $fh, $conf_file) or bye('ex_SAConfNotFound', "Cannot open '$conf_file': $!");
+    log_msg('info', "Reading SA config '$conf_file'");
+    while (<$fh>) {
         chomp;
         my $line = trim($_);
-        next if $line eq '';
-        next if $line =~ /^#/;
+        next if ( $line eq '' );
+        next if ( $line =~ /^#/ );
         my ($param, $value) = split(/\s+/, $line);
         if ( $param eq 'bayes_path' ) {
-            $conf->{'sa:bayes_path'} = $value;
-            log_msg('info', "Bayes path is '$value'") if $OPT{'verbose'} > 0;
-            return 1;
+            $conf{'sa:bayes_path'} = $value;
+            log_msg('notice', "Bayes path is '$value'");
+            last;
         }
     }
-    close(SAC);
-    log_msg('warn', "'bayes_path' not found in SA's config '$conf_file'. Assuming '$conf->{'sa:bayes_path'}'");
-    return undef;
+    close($fh);
+    if ( $conf{'sa:bayes_path'} ) {
+        return 1;
+    } else {
+        log_msg('warn', "'bayes_path' not found in SA's config '$conf_file'.");
+        return 0;
+    }
 }
+
 
 #---------------------------------------------------------------
 #
@@ -729,13 +660,13 @@ sub find_mailboxes {
     my ($conf) = @_;
     
     my %mailbox;
-    log_msg('info', "Searching for mailboxes in path $conf->{'imap:base_dir'} ...") if $OPT{'verbose'} > 1;
+    log_msg('info', "Searching for mailboxes in path $conf->{'imap:base_dir'} ...");
 
     # use domains?
     my @domains = ('');
     if ( $conf->{'imap:domains'} ne '' ) {
         @domains = split(/\s+/, $conf->{'imap:domains'});
-        log_msg('info', "  domains to search in: '@domains'") if $OPT{'verbose'} > 1;
+        log_msg('debug', "  domains to search in: '@domains'");
     }
     foreach my $domain (sort @domains) {
         my $base_dir = $conf->{'imap:base_dir'};
@@ -744,7 +675,7 @@ sub find_mailboxes {
             $base_dir .= '/domain';
             $base_dir .= '/' . substr($domain, 0, 1) if $conf->{'imap:initial_letter'} =~ /^[yY]/;
             $base_dir .= '/' . $domain;
-            log_msg('info', "  searching in domain '$domain', path is '$base_dir'") if $OPT{'verbose'} > 2;
+            log_msg('debug', "  searching in domain '$domain', path is '$base_dir'");
             unless ( -d $base_dir ) {
                 log_msg('warn', "  no such directory '$base_dir'");
                 next;
@@ -753,7 +684,7 @@ sub find_mailboxes {
         if ( $conf->{'imap:initial_letter'} =~ /^[yY]/ ) {
             for my $first_char ('a' .. 'z') {
                 my $path = $base_dir . '/' . $first_char . '/user';
-                log_msg('info', "  searching in path '$path'") if $OPT{'verbose'} > 2;
+                log_msg('debug', "  searching in path '$path'");
                 next unless (-d $path);
                 parse_mailbox_dir($conf, $path, $domain, \%mailbox);
             }
@@ -765,10 +696,40 @@ sub find_mailboxes {
         }
     }
     my $cnt = keys %mailbox;
-    log_msg('info', "$cnt mailboxes found.") if $OPT{'verbose'} > 1;
+    log_msg('info', "$cnt mailboxes found.");
     return %mailbox;
 }
 
+
+
+#---------------------------------------------------------------
+#
+# purge mailbox folder
+#
+sub purge_mailbox_folder {
+    my ($imap_mail_box) = @_;
+    
+    # get mailbox path from Cyrus
+    my $usercmd = $conf{'imap:purge_cmd'};
+    $usercmd .= " -f -b 0 '$imap_mail_box'";
+    my $cmd = "su $conf{'imap:user'} -c \"$usercmd\"";
+    $cmd .= " 2>&1";
+    log_msg('debug', "  Executing '$cmd'");
+    if ( $simulate ) {
+         log_msg('notice', "  Simulate: '$cmd'");
+    } elsif ( open(my $fh, "-|", $cmd) ) {
+        while (<$fh>) {
+            chomp;
+            log_msg('debug', "  ipurge> $_") unless /Permission denied/;
+        }
+        close($fh);
+        if ( $? != 0 ) {
+            log_msg('error', "  Purging messages from folder '$imap_mail_box' using command '$cmd' failed: $?");
+        }
+    } else {
+        log_msg('error', "  Failed to run imap:purge_cmd '$cmd': $!");
+    }
+}
 
 
 #---------------------------------------------------------------
@@ -805,28 +766,28 @@ LOOP_DIR:
         next if $name =~ /^\.{1,2}$/;    # ignore '.' and '..' 
         next unless -d "$path/$name";    # must be a directory
         my $user_domain = $name;
-	$user_domain .= '@' . $domain unless $domain eq '';
+        $user_domain .= '@' . $domain unless $domain eq '';
 
         # check include_list
         if ( @include_list ) {
-            log_msg('info', "  checking '$name' with include_list '@include_list'") if $OPT{'verbose'} > 2;
+            log_msg('debug', "  checking '$name' with include_list '@include_list'");
             foreach my $user (@include_list) {
                 if ( $user eq $name ) {
-                    log_msg('info', "  '$user_domain' matches include_list '@include_list'") if $OPT{'verbose'} > 1;
+                    log_msg('info', "  '$user_domain' matches include_list '@include_list'");
                     $mailbox->{"$domain:$name"} = $path . '/' . $name;
                     next LOOP_DIR;
                 }
             }
-            log_msg('info', "  '$user_domain' doesn't match include_list '@include_list'") if $OPT{'verbose'} > 2;
+            log_msg('debug', "  '$user_domain' doesn't match include_list '@include_list'");
             next LOOP_DIR;
         }
         
         # check exclude_list
         if ( @exclude_list ) {
-            log_msg('info', "  checking '$user_domain' with exclude_list '@exclude_list'") if $OPT{'verbose'} > 2;
+            log_msg('debug', "  checking '$user_domain' with exclude_list '@exclude_list'");
             foreach my $user (@exclude_list) {
                 if ( $user eq $name ) {
-                    log_msg('info', "  ignored '$user_domain', matches exclude_list '@exclude_list'") if $OPT{'verbose'} > 1;
+                    log_msg('info', "  ignored '$user_domain', matches exclude_list '@exclude_list'");
                     next LOOP_DIR;
                 }
             }
@@ -834,23 +795,23 @@ LOOP_DIR:
 
         # check include_regexp
         if ( $include_regexp ne '' ) {
-            log_msg('info', "  checking '$user_domain' with include_regexp '$include_regexp'") if $OPT{'verbose'} > 2;
+            log_msg('debug', "  checking '$user_domain' with include_regexp '$include_regexp'");
             unless ( $name =~ /$include_regexp/ ) {
-                log_msg('info', "  ignored '$user_domain', doesn't match include_regexp '$include_regexp'") if $OPT{'verbose'} > 1;
+                log_msg('info', "  ignored '$user_domain', doesn't match include_regexp '$include_regexp'");
                 next LOOP_DIR;
             }
         }
 
         # check exclude_regexp
         if ( $exclude_regexp ne '' ) {
-            log_msg('info', "  checking '$user_domain' with exclude_regexp '$exclude_regexp'") if $OPT{'verbose'} > 2;
+            log_msg('debug', "  checking '$user_domain' with exclude_regexp '$exclude_regexp'");
             if ( $name =~ /$exclude_regexp/ ) {
-                log_msg('info', "  ignored '$user_domain', matches exclude_regexp '$exclude_regexp'") if $OPT{'verbose'} > 1;
+                log_msg('info', "  ignored '$user_domain', matches exclude_regexp '$exclude_regexp'");
                 next LOOP_DIR;
             }
 
         }
-        log_msg('info', "  found '$user_domain'") if $OPT{'verbose'} > 1;
+        log_msg('info', "  found '$user_domain'");
         $mailbox->{"$domain:$name"} = $path . '/' . $name;
     }
     return $mailbox;
@@ -1059,15 +1020,9 @@ ingored.
 
 =head2 Section [global]
 
-The [global] section contains all global controll parameters.
+The [global] section contains all global control parameters.
 
 =over 4
-
-=item B<tmp_dir = temporary-directory>
-
-B<sa-learn-cyrus> creates some temporary files during each run. This is the 
-directory where thes files are created.
-
 
 =item B<lock_file = full-path-to-lock-file>
 
@@ -1197,7 +1152,7 @@ sql: SQL Database
 
 =item B<prefs_file = file>
 
-Path of the system-wide SA configuartin file.
+Path of the system-wide SA configuration file.
 
 Example: 
 
@@ -1321,28 +1276,45 @@ F</etc/spamassassin/sa-learn-cyrus.conf>
 C<sa-learn(1)>, C<spamassassin(1)>, C<Mail::SpamAssassin(3)>, 
 C<Mail::SpamAssassin::Conf(3)>, C<imapd(8)>, C<spamd(8)>
 
-The current version of this script is available  at
-L<http://www.pollux.franken.de/mail-server-tools/sa-learn-cyrus/>
+The current version of this application is available at
+L<https://github.com/michaelroland/sa-learn-cyrus>
 
 =head1 PREREQUISITES
 
 B<sa-learn> (part of the SpamAssassin package), B<ipurge> (part of Cyrus IMAPd)
 
-=head1 AUTHOR
+=head1 AUTHORS
 
-Hans-Juergen Beie E<lt>hjb@pollux.franken.deE<gt>
+=over
+
+=item Hans-Juergen Beie E<lt>hjb@pollux.franken.deE<gt>
+
+=item Michael Roland E<lt>mi.roland@gmail.comE<gt>
+
+=back
 
 =head1 COPYRIGHT AND LICENSE
 
-Copyright 2004-2011 by Hans-Juergen Beie.
+=over
 
-This program is free software; you can redistribute it and/or modify it under
-the terms of the Artistic License 2.0 
-(L<http://foundation.perl.org/legal/licenses/artistic-2_0-plain.html>)
-or the GNU General Public License as published by the Free Software Foundation;
-either version 2 of the license 
-(L<http://www.gnu.org/licenses/old-licenses/gpl-2.0.html>), or (at your option)
-any later version.
+=item Copyright (c) 2004-2011 Hans-Juergen Beie
+
+=item Copyright (c) 2020 Michael Roland
+
+=back
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see L<https://www.gnu.org/licenses/>.
 
 =head1 DISCLAIMER
 
@@ -1353,7 +1325,7 @@ PARTICULAR PURPOSE.
 =head1 ACKNOWLEDGMENTS
 
 Thanks to Robert Carnecky and Jan Hauke Rahm for testing and suggestions for
-the implementation of the domain support. David Caldwell contributed the the 
+the implementation of the domain support. David Caldwell contributed the 
 virtual_config_dir feature. Some other contributers are listed in the 
 CHANGELOG. Many thanks to them for their help and suggestions.
 
