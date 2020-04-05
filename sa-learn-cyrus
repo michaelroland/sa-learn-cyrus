@@ -857,7 +857,7 @@ sub make_htmldoc {
     pod2html($conf->{'me'}, 
              "--title=$conf->{'header'}", 
              "--htmldir=$conf->{'my_path'}", 
-             "--backlink=Back to Top", 
+             "--backlink", 
              '--index',
              "--cachedir=$tmp_dir",
              '--flush',
