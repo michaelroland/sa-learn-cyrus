@@ -29,8 +29,8 @@
 ################################################################################
 
 my $me = 'sa-learn-cyrus';
-my $VERSION = '0.3.5';
-my $lupdate = '2011-11-02';
+my $VERSION = '0.4.0';
+my $lupdate = '2020-04-04';
 my $author = 'hjb+MR';
 my $header = "$me-$VERSION ($author -- $lupdate)";
 my $basename = `basename $0`;
@@ -83,22 +83,32 @@ our %conf = (
     'sa:site_config_path'       => '/etc/spamassassin',
     'sa:prefs_file'             => '/etc/spamassassin/local.cf',
     'sa:learn_cmd'              => '/usr/bin/sa-learn',
+    'sa:bayes_storage'          => 'berkely',
+    'sa:bayes_path'             => '',
+    'sa:tokens'                 => '_toks',
+    'sa:fix_db_permissions'     => 'yes',
     'sa:user'                   => 'mail',
     'sa:group'                  => 'mail',
-    'sa:tokens'                 => '_toks',
-    'sa:debug'                  => 'no',
-    'sa:bayes_storage'          => 'berkely',
-    'sa:fix_db_permissions'     => 'yes',
-    'sa:bayes_path'             => '~/.spamassassin/bayes',
+    'sa:sync_once'              => 'yes',
     'sa:virtual_config_dir'     => '',
+    'sa:debug'                  => 'no',
 
     # [imap]
-    'imap:domains'              => '',    
     'imap:base_dir'             => '/var/spool/cyrus/mail',
     'imap:initial_letter'       => 'yes',
-    'imap:purge_cmd'            => '/usr/sbin/ipurge',
+    'imap:domains'              => '',    
+    'imap:unixhierarchysep'     => 'yes',
+    'imap:purge_cmd'            => '/usr/lib/cyrus/bin/ipurge',
+    'imap:mbpath_cmd'           => '/usr/lib/cyrus/bin/mbpath',
     'imap:user'                 => 'cyrus',
-    'imap:unixhierarchysep'     => 'no',
+    'imap:userprefix'           => 'user',
+    'imap:domainprefix'         => 'domain',
+    'imap:mbox_glob'            => '/[0-9]*.',
+
+    # [kolab]
+    'kolab:enable'              => 'no',
+    'kolab:util_cmd'            => '/usr/sbin/kolab',
+    'kolab:mblist_subcmd'       => 'list-mailboxes',
 );
 
 # -------------------------------------------------------------
@@ -162,7 +172,7 @@ if ( $OPT{'man'} ) {
 };
 
 if ( $OPT{'version'} ) {
-    print "$VERSION\n";
+    print "$header\n";
     bye('ex_OK', '');
 };
 
@@ -218,7 +228,7 @@ if ( @user_names ) {
     # disable include/exclude settings from config file
     $conf{'mailbox:include_regexp'} = '';
     $conf{'mailbox:exclude_list'} = '';
-    $conf{'mailbox:exclude_regexp'} = '.*';
+    $conf{'mailbox:exclude_regexp'} = '';
 }
 
 # sa:debug
@@ -256,40 +266,38 @@ if ( ($conf{'sa:bayes_storage'} =~ /^berkely/) and ($conf{'sa:fix_db_permissions
     read_sa_config() or bye('ex_SANotFound', "Check your configuration!");
 }
 
-my %mailboxes = find_mailboxes(\%conf);
-unless (keys %mailboxes) {
+my @mailboxes = find_mailboxes();
+unless (scalar @mailboxes) {
     bye ('ex_NoMailboxesFound', "No matching mailboxes found. There's nothing to do for me.");
 }
 
 my $mails_learned = 0;	# total count of learned mails
+foreach my $mbx (sort @mailboxes) {
+    my ($domain, $user) = split(/:/, $mbx, 2);
+    my $user_qualified = $user;
+    if ( $domain ne '' ) {
+        $user_qualified .= '@' . $domain;
+    }
+    log_msg('notice', "User '$user_qualified'");
 
-foreach my $key (sort keys %mailboxes) {
-    my $imap_mail_path = $mailboxes{$key};
-    my ($domain, $user) = split(/:/, $key);
-    my $user_domain = $user;
-    $user_domain .= '@' . $domain unless $domain eq '';
-    my $imap_unixhierarchysep = ( $conf{'imap:unixhierarchysep'} =~ /^[yY]/ ) ? "/" : ".";
-    my $imap_mail_box = 'user' . $imap_unixhierarchysep . $user;
-    if ( -d $imap_mail_path ) {
-        log_msg('notice', "Mailbox '$user_domain'");
-        for my $learn ('spam' , 'ham') {
-            my $learn_folder = $conf{"mailbox:$learn" . '_folder'};
-            # if unixhierarchy is set, veryify folderstring [FM]
-            $learn_folder =~ s/\./\//g if $conf{'imap:unixhierarchysep'} =~ /^[yY]/;
-            my $learn_path = $learn_folder;
-            $learn_path =~ s/\./\//g;
-            $learn_folder = "$imap_mail_box$imap_unixhierarchysep$learn_folder";
-            $learn_path = $imap_mail_path . '/' . $learn_path;
-
+    for my $learn ('spam' , 'ham') {
+        my $learn_folder = $conf{'mailbox:' . $learn . '_folder'};
+        my $learn_path = get_mailbox_folder_path($domain, $user, $learn_folder);
+        
+        if ( $learn_path and ( -d $learn_path ) ) {
+            log_msg('notice', "  Learning $learn from folder '$learn_folder' in path '$learn_path'.");
+            
             my $virtual_config_dir;
             if ( $conf{'sa:virtual_config_dir'} ) {
                 $virtual_config_dir = $conf{'sa:virtual_config_dir'};
                 $virtual_config_dir =~ s/%%/%/g;
                 $virtual_config_dir =~ s/%l/$user/g;
                 $virtual_config_dir =~ s/%d/$domain/g;
-                $virtual_config_dir =~ s/%u/$user_domain/g;
+                $virtual_config_dir =~ s/%u/$user_qualified/g;
             }
-            log_msg('notice', "  Learning $learn from folder '$learn_folder' in path '$learn_path'.");
+            
+            my $mbox_glob = $conf{'imap:mbox_glob'};
+            
             # sa-learn command parameters
             my $cmd = $conf{'sa:learn_cmd'};
             $cmd .= ' --' . $learn;
@@ -299,7 +307,7 @@ foreach my $key (sort keys %mailboxes) {
             $cmd .= ' --no-sync' if ( $conf{'sa:sync_once'} =~ /^[yY]/ );
             $cmd .= " --dbpath='$virtual_config_dir/bayes'" if ( $conf{'sa:virtual_config_dir'} and ($conf{'sa:bayes_storage'} =~ /^berkely/) );
             $cmd .= " --username='$user'" if ( $conf{'sa:virtual_config_dir'} );
-            $cmd .= " '$learn_path'";
+            $cmd .= " '$learn_path$mbox_glob'";
             $cmd .= ' 2>&1';
 
             log_msg('debug', "  Executing '$cmd'");
@@ -329,11 +337,9 @@ foreach my $key (sort keys %mailboxes) {
             if ( $do_purge and ($conf{'mailbox:remove_' . $learn} =~ /^[yY]/) ) {
                 # delete learned mails
                 log_msg('notice', "  Purging learned $learn mails from folder '$learn_folder'");
-                purge_mailbox_folder($learn_path);
+                purge_mailbox_folder($domain, $user, $learn_folder);
             }
         }
-    } else {
-        log_msg('notice', "No mailbox '$user_domain' found in '$imap_mail_path'");
     }
 }
 
@@ -633,73 +639,123 @@ sub read_sa_config {
 
 #---------------------------------------------------------------
 #
-# find mails in mailbox
-#
-my @MAILS;
-sub file_wanted {
-    my $file = $_;			# file
-    my $file_name = $File::Find::name;	# full path name
-    return unless  -f $file_name;     	# plain files only
-    return if $file =~ /^cyrus\./;	# no mail
-    push(@MAILS, $file_name);
-}
-
-sub find_mails {
-    use File::Find;
-    my ($mbox_dir) = @_;
-    @MAILS = ();
-    find({ wanted => \&file_wanted, no_chdir => 0 }, $mbox_dir);
-    return @MAILS;
-}
-
-#---------------------------------------------------------------
-#
-# search mailboxes in imap spool
+# search mailboxes in imap spool or with Kolab
 #
 sub find_mailboxes {
-    my ($conf) = @_;
-    
-    my %mailbox;
-    log_msg('info', "Searching for mailboxes in path $conf->{'imap:base_dir'} ...");
+    my @mailboxes;
 
     # use domains?
     my @domains = ('');
-    if ( $conf->{'imap:domains'} ne '' ) {
-        @domains = split(/\s+/, $conf->{'imap:domains'});
-        log_msg('debug', "  domains to search in: '@domains'");
+    if ( $conf{'imap:domains'} ne '' ) {
+        @domains = split(/\s+/, $conf{'imap:domains'});
+        log_msg('debug', "Domains to search in: '@domains'");
     }
-    foreach my $domain (sort @domains) {
-        my $base_dir = $conf->{'imap:base_dir'};
-        $domain = lc($domain);
-        unless ( $domain eq '' ) {
-            $base_dir .= '/domain';
-            $base_dir .= '/' . substr($domain, 0, 1) if $conf->{'imap:initial_letter'} =~ /^[yY]/;
-            $base_dir .= '/' . $domain;
-            log_msg('debug', "  searching in domain '$domain', path is '$base_dir'");
-            unless ( -d $base_dir ) {
-                log_msg('warn', "  no such directory '$base_dir'");
-                next;
+
+    if ( $conf{'kolab:enable'} =~ /^[yY]/ ) {
+        log_msg('info', "Searching for mailboxes with Kolab ...");
+
+        foreach my $domain (sort @domains) {
+            parse_mailbox_list_kolab($domain, \@mailboxes)
+        }
+
+    } else {
+        log_msg('info', "Searching for mailboxes in path $conf{'imap:base_dir'} ...");
+
+        foreach my $domain (sort @domains) {
+            my $base_dir = $conf{'imap:base_dir'};
+            $domain = lc($domain);
+            if ( $domain ne '' ) {
+                $base_dir .= '/' . $conf{'imap:domainprefix'};
+                $base_dir .= '/' . substr($domain, 0, 1) if ( $conf{'imap:initial_letter'} =~ /^[yY]/ );
+                $base_dir .= '/' . $domain;
+                log_msg('debug', "  searching in domain '$domain', path is '$base_dir'");
+                unless ( -d $base_dir ) {
+                    log_msg('warn', "  no such directory '$base_dir'");
+                    next;
+                }
+            } else {
+                log_msg('debug', "  assuming flat hierarchy (no domains)");
+            }
+            if ( $conf{'imap:initial_letter'} =~ /^[yY]/ ) {
+                for my $first_char ('a' .. 'z') {
+                    my $path = $base_dir . '/' . $first_char . '/' . $conf{'imap:userprefix'};
+                    log_msg('debug', "  searching in path '$path'");
+                    next unless ( -d $path );
+                    parse_mailbox_list_dir($path, $domain, \@mailboxes);
+                }
+            } else {
+                my $path = $base_dir . '/' . $conf{'imap:userprefix'};
+                parse_mailbox_list_dir($path, $domain, \@mailboxes);
             }
         }
-        if ( $conf->{'imap:initial_letter'} =~ /^[yY]/ ) {
-            for my $first_char ('a' .. 'z') {
-                my $path = $base_dir . '/' . $first_char . '/user';
-                log_msg('debug', "  searching in path '$path'");
-                next unless (-d $path);
-                parse_mailbox_dir($conf, $path, $domain, \%mailbox);
-            }
-        } else {
-            # version 0.3.3: bugfix by Andreas Czerniak <acz@informatik.uni-kiel.de>
-            # my $path = $conf->{'imap:base_dir'} . '/user';
-            my $path = $base_dir . '/user';
-            parse_mailbox_dir($conf, $path, $domain, \%mailbox);
-        }
     }
-    my $cnt = keys %mailbox;
+    
+    my $cnt = scalar @mailboxes;
     log_msg('info', "$cnt mailboxes found.");
-    return %mailbox;
+    return @mailboxes;
 }
 
+
+
+#---------------------------------------------------------------
+#
+# get qualified IMAP folder name
+#
+sub get_imap_folder_name {
+    my ($domain, $user, $folder) = @_;
+    
+    my $imap_hierarchysep = '.';
+    if ( $conf{'imap:unixhierarchysep'} =~ /^[yY]/ ) {
+        $imap_hierarchysep = '/';
+        $folder =~ s/\./\//g;
+    }
+    my $imap_mail_box = $conf{'imap:userprefix'} . $imap_hierarchysep . $user;
+    if ( $folder ne '' ) {
+        $imap_mail_box .= $imap_hierarchysep . $folder;
+    }
+    if ( $domain ne '' ) {
+        $imap_mail_box .= '@' . $domain;
+    }
+    
+    return $imap_mail_box;
+}
+
+
+#---------------------------------------------------------------
+#
+# get mailbox folder path
+#
+sub get_mailbox_folder_path {
+    my ($domain, $user, $folder) = @_;
+    
+    my $imap_mail_box = get_imap_folder_name($domain, $user, $folder);
+    
+    my $mailbox_path = undef;
+    
+    # get mailbox path from Cyrus
+    my $cmd = $conf{'imap:mbpath_cmd'};
+    $cmd .= " '$imap_mail_box'";
+    $cmd .= " 2>/dev/null";
+    log_msg('debug', "  Executing '$cmd'");
+    if ( open(my $fh, "-|", $cmd) ) {
+        while (<$fh>) {
+            chomp;
+            $mailbox_path = $_;
+            last if ( $mailbox_path ne '' );
+        }
+        close($fh);
+    } else {
+        log_msg('error', "  Failed to run imap:mbpath_cmd '$cmd': $!");
+    }
+    
+    if ( $mailbox_path ) {
+        log_msg('debug', "  Path for folder '$folder' of user '$user' in domain '$domain' is '$mailbox_path'");
+        return $mailbox_path;
+    } else {
+        log_msg('error', "  Failed to get path for folder '$folder' of user '$user' in domain '$domain'");
+        return undef;
+    }
+}
 
 
 #---------------------------------------------------------------
@@ -707,7 +763,9 @@ sub find_mailboxes {
 # purge mailbox folder
 #
 sub purge_mailbox_folder {
-    my ($imap_mail_box) = @_;
+    my ($domain, $user, $folder) = @_;
+    
+    my $imap_mail_box = get_imap_folder_name($domain, $user, $folder);
     
     # get mailbox path from Cyrus
     my $usercmd = $conf{'imap:purge_cmd'};
@@ -724,7 +782,7 @@ sub purge_mailbox_folder {
         }
         close($fh);
         if ( $? != 0 ) {
-            log_msg('error', "  Purging messages from folder '$imap_mail_box' using command '$cmd' failed: $?");
+            log_msg('error', "  Purging messages from folder '$folder' using command '$cmd' failed: $?");
         }
     } else {
         log_msg('error', "  Failed to run imap:purge_cmd '$cmd': $!");
@@ -734,10 +792,46 @@ sub purge_mailbox_folder {
 
 #---------------------------------------------------------------
 #
+# parse mailbox list from Kolab
+#
+sub parse_mailbox_list_kolab {
+    my ($domain, $mailboxes) = @_;
+    
+    my $imap_mail_box = get_imap_folder_name($domain, '%', '');
+    my $imap_userprefix = $conf{'imap:userprefix'};
+    
+    # enumerate mailboxes from Kolab
+    my $cmd = $conf{'kolab:util_cmd'};
+    $cmd .= ' ' . $conf{'kolab:mblist_subcmd'};
+    $cmd .= " '$imap_mail_box'";
+    log_msg('debug', "  Executing '$cmd'");
+    if ( open(my $fh, "-|", $cmd) ) {
+        while (<$fh>) {
+            chomp;
+            my $user = $_;
+            $user =~ s/^$imap_userprefix[\.\/]//;
+            my ($username, $userdomain) = split(/@([^@]*)$/, $user);
+
+            if ( is_user_included($userdomain, $username) ) {
+                log_msg('info', "  found '$userdomain:$username'");
+                push(@$mailboxes, "$userdomain:$username");
+            }
+        }
+        close($fh);
+    } else {
+        log_msg('error', "  Failed to run kolab mailbox enumeration '$cmd': $!");
+    }
+    
+    return $mailboxes;
+}
+
+
+#---------------------------------------------------------------
+#
 # parse mailbox directory
 #
-sub parse_mailbox_dir {
-    my ($conf, $path, $domain, $mailbox) = @_;
+sub parse_mailbox_list_dir {
+    my ($path, $domain, $mailboxes) = @_;
     
     # parse directory
     my @items;
@@ -749,73 +843,97 @@ sub parse_mailbox_dir {
         return undef;
     }
     
-    #
     # search for mailbox directories
-    #
-    my @include_list =split(/\s/, $conf->{'mailbox:include_list'});
-    my @exclude_list = split(/\s/, $conf->{'mailbox:exclude_list'});
-    my $include_regexp = $conf->{'mailbox:include_regexp'};
-    my $exclude_regexp = $conf->{'mailbox:exclude_regexp'};
-    
-    $include_regexp = '' if @include_list; # explicit list: no regexp 
-    $exclude_regexp = '' if @exclude_list; # explicit list: no regexp 
-
-
-LOOP_DIR:        
-    foreach my $name (sort @items) {
-        next if $name =~ /^\.{1,2}$/;    # ignore '.' and '..' 
-        next unless -d "$path/$name";    # must be a directory
-        my $user_domain = $name;
-        $user_domain .= '@' . $domain unless $domain eq '';
-
-        # check include_list
-        if ( @include_list ) {
-            log_msg('debug', "  checking '$name' with include_list '@include_list'");
-            foreach my $user (@include_list) {
-                if ( $user eq $name ) {
-                    log_msg('info', "  '$user_domain' matches include_list '@include_list'");
-                    $mailbox->{"$domain:$name"} = $path . '/' . $name;
-                    next LOOP_DIR;
-                }
-            }
-            log_msg('debug', "  '$user_domain' doesn't match include_list '@include_list'");
-            next LOOP_DIR;
-        }
+    foreach my $username (sort @items) {
+        next if ( $username =~ /^\.{1,2}$/) ;    # ignore '.' and '..' 
+        next unless ( -d "$path/$username" );    # must be a directory
         
-        # check exclude_list
-        if ( @exclude_list ) {
-            log_msg('debug', "  checking '$user_domain' with exclude_list '@exclude_list'");
-            foreach my $user (@exclude_list) {
-                if ( $user eq $name ) {
-                    log_msg('info', "  ignored '$user_domain', matches exclude_list '@exclude_list'");
-                    next LOOP_DIR;
-                }
-            }
+        if ( $conf{'imap:unixhierarchysep'} =~ /^[yY]/ ) {
+            $username =~ s/\^/./g;
         }
 
-        # check include_regexp
-        if ( $include_regexp ne '' ) {
-            log_msg('debug', "  checking '$user_domain' with include_regexp '$include_regexp'");
-            unless ( $name =~ /$include_regexp/ ) {
-                log_msg('info', "  ignored '$user_domain', doesn't match include_regexp '$include_regexp'");
-                next LOOP_DIR;
-            }
+        if ( is_user_included($domain, $username) ) {
+            log_msg('info', "  found '$domain:$username'");
+            push(@$mailboxes, "$domain:$username");
         }
-
-        # check exclude_regexp
-        if ( $exclude_regexp ne '' ) {
-            log_msg('debug', "  checking '$user_domain' with exclude_regexp '$exclude_regexp'");
-            if ( $name =~ /$exclude_regexp/ ) {
-                log_msg('info', "  ignored '$user_domain', matches exclude_regexp '$exclude_regexp'");
-                next LOOP_DIR;
-            }
-
-        }
-        log_msg('info', "  found '$user_domain'");
-        $mailbox->{"$domain:$name"} = $path . '/' . $name;
     }
-    return $mailbox;
+    
+    return $mailboxes;
 }
+
+#---------------------------------------------------------------
+#
+# match user agains include and exclude lists
+#
+sub is_user_included {
+    my ($domain, $user) = @_;
+    
+    my @include_list = split(/\s/, $conf{'mailbox:include_list'});
+    my @exclude_list = split(/\s/, $conf{'mailbox:exclude_list'});
+    my $include_regexp = $conf{'mailbox:include_regexp'};
+    my $exclude_regexp = $conf{'mailbox:exclude_regexp'};
+    
+    if ( @include_list ) {
+        # check ONLY include_list if not empty
+        log_msg('debug', "  checking '$user\@$domain' with include_list '@include_list'");
+        foreach my $name (@include_list) {
+            if ( $name eq "$user\@$domain" ) {
+                log_msg('debug', "  '$user\@$domain' matches include_list '@include_list'");
+                return 1;
+            } elsif ( $name eq $user ) {
+                log_msg('debug', "  '$user' matches include_list '@include_list'");
+                return 1;
+            }
+        }
+        log_msg('debug', "  '$user\@$domain' does not match include_list '@include_list'");
+        return 0;
+    }
+    
+    if ( $include_regexp ne '' ) {
+        # check include_regexp if not empty
+        log_msg('debug', "  checking '$user\@$domain' with include_regexp '$include_regexp'");
+        if ( "$user\@$domain" =~ /$include_regexp/ ) {
+            log_msg('debug', "  '$user\@$domain', matches include_regexp '$include_regexp'");
+        } elsif ( ($domain eq '') and ($user =~ /$include_regexp/) ) {
+            log_msg('debug', "  '$user', matches include_regexp '$include_regexp'");
+        } else {
+            log_msg('debug', "  '$user\@$domain' does not match include_regexp '$include_regexp'");
+            return 0;
+        }
+    } else {
+        log_msg('info', "  include_regexp is empty, no users will be selected");
+        return 0;
+    }
+    
+    if ( @exclude_list ) {
+        # check exclude_list if not empty
+        log_msg('debug', "  checking '$user\@$domain' with exclude_list '@exclude_list'");
+        foreach my $name (@exclude_list) {
+            if ( $name eq "$user\@$domain" ) {
+                log_msg('debug', "  ignored '$user\@$domain', matches exclude_list '@exclude_list'");
+                return 0;
+            } elsif ( $name eq $user ) {
+                log_msg('debug', "  ignored '$user', matches exclude_list '@exclude_list'");
+                return 0;
+            }
+        }
+    }
+    
+    if ( $exclude_regexp ne '' ) {
+        # check exclude_regexp if not empty
+        log_msg('debug', "  checking '$user\@$domain' with exclude_regexp '$exclude_regexp'");
+        if ( "$user\@$domain" =~ /$exclude_regexp/ ) {
+            log_msg('debug', "  ignored '$user\@$domain', matches exclude_regexp '$exclude_regexp'");
+            return 0;
+        } elsif ( ($domain eq '') and ($user =~ /$exclude_regexp/) ) {
+            log_msg('debug', "  ignored '$user', matches exclude_regexp '$exclude_regexp'");
+            return 0;
+        }
+    }
+    
+    return 1;
+}
+
 
 #---------------------------------------------------------------
 #
@@ -1040,12 +1158,12 @@ level to start with is 1.
 
 B<sa-learn-cyrus> should be run in simulation mode (C<simulate = yes>) after the 
 first customization of the configuration to avoid loss of data or corruption 
-of SA's database in case of wrongly configured parameters.
+of SA's database in case of wrongly configured parameters. Defaults to C<no>.
 
 =item B<log_with_tag = yes|no>
 
 Prepend the ouput (log) with a tag (date, time, pid). Set to C<no>
-to avoid additional tagging when piped to syslog. Default is C<yes>.
+to avoid additional tagging when piped to syslog. Defaults to C<yes>.
 
 =back
 
@@ -1059,18 +1177,23 @@ the special subfolders, and to define the actions to apply.
 =item B<include_list = list-of-mailboxes>
 
 Only spam/ham mails of these mailboxes are fed to Spamassassin's database. If 
-this List ist empty, all mailboxes will be used. C<include_list> may be used 
-instead of the list on the command line.
+this list is empty, all mailboxes will be used. C<include_list> may be used 
+instead of the list on the command line. If C<include_list> or a list of users
+on the command line is used, C<exclude_list> and C<exclude_regexp> are ignored.
+If IMAP domains are used, the user names provided in this list can be used to
+match qualified user names (in the form 'username@domain') or unqualified user
+names (in the form 'username'). The latter matches users across all domains.
 
 Example:
 
-  include_list = fred wilma fritz hjb
+  include_list = fred@domain1 wilma@domain2 fritz hjb
 
 =item B<include_regexp = regular-expression>
 
-If include_list is empty, a regular expression given here is applied to all 
-mailbox names to select mailboxes. This parameter is ignored if include_list 
-is not empty.
+If C<include_list> is empty, a regular expression given here is applied to all 
+mailbox names to select mailboxes. If domains are used, the expression is
+matched against the qualified user name. This parameter is ignored if
+C<include_list> is not empty. If C<include_regexp> no user will be selected!
 
 Example: Include all mailboxes beginning with 'knf-'.
 
@@ -1078,17 +1201,20 @@ Example: Include all mailboxes beginning with 'knf-'.
 
 =item B<exclude_list = list-of-mailboxes>
 
-A list of mailboxes wich will be excluded. If include_list is not empty, this 
-parameter is ignored.
+If C<include_list> is empty, a list of mailboxes which will be excluded. This
+list is applied to the results that pass C<include_regexp>. This
+parameter is ignored if C<include_list> is not empty.
 
 =item B<exclude_regexp = regular-expression>
 
-Mailbox names which match with this regular expresson are excluded from 
-processing.
+If C<include_list> is empty, a regular expression given here is used to exclude
+mailbox names from processing. This regular expression is applied to the results
+that pass C<include_regexp> (if present) and C<exclude_list>. This parameter is
+ignored if C<include_list> is not empty.
 
-Example: Ignore all mailboxes ending with '.beie'
+Example: Ignore all mailboxes for domain 'example.com'
 
-  exclude_regexp = \.beie$
+  exclude_regexp = @example\.com$
 
 =item B<spam_folder = folder-name>
 
@@ -1118,29 +1244,45 @@ The name of the special subfolder in each mailbox which contains ham.
 
 =item B<remove_spam = yes|no>
 
-Are the spam messages in the C<spam_folder> to be removed after feeding them to
-the SA database or not? 
+Remove the spam messages in the C<spam_folder> after feeding them into the SA
+database. Defaults to C<no>.
 
 =item B<remove_ham = yes|no>
 
-Are the ham messages in the C<ham_folder> to be removed after feeding them to 
-the SA database or not?
+Remove the ham messages in the C<ham_folder> after feeding them into the SA
+database. Defaults to C<no>.
 
 =back
 
 =head2 Section [sa]
 
-Spamassassin (SA) configuration items.
+Spamassassin (SA) configuration parameters.
 
 =over 4
 
 =item B<site_config_path = path>
 
-Path to system-wide SA preferences.
+Path to system-wide SA preferences (defaults to F</etc/spamassassin>).
 
 Example: 
 
   site_config_path = /etc/spamassassin
+
+=item B<prefs_file = file>
+
+Path of the system-wide SA configuration file (defaults to F</etc/spamassassin/local.cf>).
+
+Example: 
+
+  prefs_file = /etc/spamassassin/local.cf
+
+=item B<learn_cmd = path>
+
+Path to the sa-learn utility (defaults to F</usr/bin/sa-learn>).
+
+Example:
+
+  learn_cmd = /usr/bin/sa-learn
 
 =item B<bayes_storage = berkely|sql>
 
@@ -1150,21 +1292,14 @@ berkely: Berkely DB (default)
 
 sql: SQL Database
 
-=item B<prefs_file = file>
+=item B<bayes_path = path>
 
-Path of the system-wide SA configuration file.
+Path to system-wide Bayes database. If empty (default), the path is obtained from
+C<prefs_file>.
 
 Example: 
 
-  prefs_file = /etc/spamassassin/local.cf
-
-=item B<learn_cmd = path>
-
-Path to the sa-learn utility.
-
-Example:
-
-  learn_cmd = /usr/bin/sa-learn
+  bayes_path = ~/.spamassassin/bayes
 
 =item B<fix_db_permissions = yes|no>
 
@@ -1188,39 +1323,40 @@ Example:
 
 =item B<sync_once = yes|no>
 
-Skip synchronization after every change of database, but sync once 
-after all messages have been learned. May speed up learning from many folders.
-Default is C<yes>.
+Skip synchronization after every change of database, but sync once after all
+messages have been learned. May speed up learning from many folders. Defaults
+to C<yes>.
 
 =item B<virtual_config_dir = pattern>
 
-Use this if you use the C<--virtual-config-dir> option of C<spamd> (it
-needs to match exactly). See the C<spamd> man page for more information.
-
+Use this if you use the C<--virtual-config-dir> option of C<spamd> (it needs
+to match exactly). See the C<spamd> man page for more information.
 
 =item B<debug = yes|no>
 
-Run sa-learn in debug mode or not. C<debug = yes> may be useful to examine 
-problems.
+Run sa-learn in debug mode. C<debug = yes> may be useful to examine problems.
+Defaults to C<no>.
 
 =back
 
 =head2 Section [imap]
 
-The section [imap] contains the necessary configuration parameter to locate
-an manage the (Cyrus) IMAPd spool files.
+The section [imap] contains the necessary configuration parameters to locate
+and manage the (Cyrus) IMAPd spool files.
 
 =over 4
 
 =item B<base_dir = dir>
 
-The root of the base directory of the IMAP spool (below that the mailboxes are 
-located).
+The base directory of the IMAP spool (below that the mailboxes are located).
+Defaults to F</var/spool/cyrus/mail>. This setting is ignored if Kolab is used
+to enumerate mailboxes.
 
 =item B<initial_letter = yes|no>
 
 If base_dir is divided in subdirectories named with the initial letters of 
-mailbox names set C<initial_letter = yes> (default), otherwise choose no.
+mailbox names set C<initial_letter = yes> (default), otherwise choose C<no>.
+This setting is ignored if Kolab is used to enumerate mailboxes.
 
 Examples for joe's mailbox:
 
@@ -1229,11 +1365,14 @@ Examples for joe's mailbox:
 
 =item B<domains = list-of-domains>
 
-If your Cyrus spool uses domain hierarchy supply a list of domains. If domain 
-support is not used leave this entry empty. The C<initial_letter> option (see 
-above) is applied to domains, too.    
+If your Cyrus spool uses domain hierarchy, only mailboxes from these domains
+will be enumerated. If Kolab is used to enumerate mailboxes, you may leave
+this field empty to enumerate mailboxes from all domains. If domain support
+is not used, leave this entry empty.
 
-Example for mailboxes fritz@bar.org and joe@foo.com :
+The C<initial_letter> option (see above) is applied to domains, too.
+
+Example for mailboxes fritz@bar.org and joe@foo.com:
 
 The mail files within the Cyrus spool are located at
 
@@ -1246,16 +1385,25 @@ List the domains as
 
 =item B<unixhierarchysep = yes|no>
 
-Choose C<unixhierarchysep = yes> if Cyrus is configured to accept usernames
-like 'hans.mueller.somedomain.tld'. Otherwise set C<unixhierarchysep = no>.
+Correspondes to the C<unixhierarchysep> in Cyrus C<imapd.conf>.
 
 =item B<purge_cmd = path-to-command>
 
-The path to the Cyrus B<ipurge> utility for purging mail messages.
+The path to the Cyrus B<ipurge> utility for purging mail messages. Defaults
+to F</usr/lib/cyrus/bin/ipurge>.
 
 Example:
 
-  purge_cmd = /usr/sbin/ipurge
+  purge_cmd = /usr/lib/cyrus/bin/ipurge
+
+=item B<mbpath_cmd = path-to-command>
+
+The path to the Cyrus B<mbpath> utility for discovering the file system
+path of mailboxes. Defaults to F</usr/lib/cyrus/bin/mbpath>.
+
+Example:
+
+  mbpath_cmd = /usr/lib/cyrus/bin/mbpath
 
 =item B<user = user>
 
@@ -1267,6 +1415,37 @@ Example:
 
 =back
 
+=head2 Section [kolab]
+
+The section [kolab] contains the necessary configuration parameters for
+the Kolab integration.
+
+=over 4
+
+=item B<enable = yes|no>
+
+Use Kolab to enumerate mailboxes. Defaults to C<no>.
+
+=item B<util_cmd = path-to-command>
+
+The path to the Kolab B<kolab> administration CLI utility. Defaults
+to F</usr/sbin/kolab>.
+
+Example:
+
+  util_cmd = /usr/sbin/kolab
+
+=item B<mblist_subcmd = path-to-command>
+
+The sub-command of the Kolab administration CLI utility for enumerating
+mailboxes. Defaults to C<list-mailboxes>.
+
+Example:
+
+  mblist_subcmd = list-mailboxes
+
+=back
+
 =head1 FILES
 
 F</etc/spamassassin/sa-learn-cyrus.conf>
@@ -1274,7 +1453,8 @@ F</etc/spamassassin/sa-learn-cyrus.conf>
 =head1 SEE ALSO
 
 C<sa-learn(1)>, C<spamassassin(1)>, C<Mail::SpamAssassin(3)>, 
-C<Mail::SpamAssassin::Conf(3)>, C<imapd(8)>, C<spamd(8)>
+C<Mail::SpamAssassin::Conf(3)>, C<imapd(8)>, C<imapd.conf(5)>,
+C<spamd(8)>
 
 The current version of this application is available at
 L<https://github.com/michaelroland/sa-learn-cyrus>

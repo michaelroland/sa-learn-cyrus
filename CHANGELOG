@@ -1,5 +1,22 @@
 Changelog -- sa-learn-cyrus
 
+    Version 0.4.0 (2020-04-04)
+
+      o NOTE: Some default behavior has changed.
+        
+      o Use Cyrus mbpath utility to discover mailbox paths.
+        
+      o Added integration with Kolab for automatic mailbox discovery.
+        
+      o Eliminate use of temp files and process intermediate results
+        in-memory instead.
+        
+      o Remove obsolete configuration options.
+        
+      o Default configuration file updated.
+        
+      o POD / man page updated.
+
     Version 0.3.5 (2011-11-02)
 
       o Applied a patch from David Caldwell to use the --virtual-config-dir 
