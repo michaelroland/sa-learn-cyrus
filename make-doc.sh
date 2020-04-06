@@ -18,7 +18,7 @@
 ## GNU General Public License for more details.
 ## 
 ## You should have received a copy of the GNU General Public License
-## along with this program.  If not, see <http://www.gnu.org/licenses/>.
+## along with this program.  If not, see <https://www.gnu.org/licenses/>.
 ## 
 ################################################################################
 
@@ -40,7 +40,7 @@ usage() {
 	echo ""
 	echo "Copyright (c) 2004-2011 Hans-Juergen Beie <hjb@pollux.franken.de>"
 	echo "Copyright (c) 2020 Michael Roland <mi.roland@gmail.com>"
-	echo "License GPLv3+: GNU GPL version 3 or later <http://www.gnu.org/licenses/>"
+	echo "License GPLv3+: GNU GPL version 3 or later <https://www.gnu.org/licenses/>"
 	echo ""
 	echo "This is free software: you can redistribute and/or modify it under the"
 	echo "terms of the GPLv3+.  There is NO WARRANTY; not even the implied warranty"
