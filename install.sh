@@ -5,7 +5,7 @@
 ## Install sa-learn-cyrus
 ## 
 ## Copyright (C) 2004-2011 Hans-Juergen Beie <hjb@pollux.franken.de>
-## Copyright (C) 2020 Michael Roland <mi.roland@gmail.com>
+## Copyright (C) 2020-2023 Michael Roland <mi.roland@gmail.com>
 ## 
 ## This program is free software: you can redistribute it and/or modify
 ## it under the terms of the GNU General Public License as published by
@@ -51,7 +51,7 @@ usage() {
 	echo -e "\t-h          Show this message"
 	echo ""
 	echo "Copyright (c) 2004-2011 Hans-Juergen Beie <hjb@pollux.franken.de>"
-	echo "Copyright (c) 2020 Michael Roland <mi.roland@gmail.com>"
+	echo "Copyright (c) 2020-2023 Michael Roland <mi.roland@gmail.com>"
 	echo "License GPLv3+: GNU GPL version 3 or later <https://www.gnu.org/licenses/>"
 	echo ""
 	echo "This is free software: you can redistribute and/or modify it under the"
@@ -88,18 +88,12 @@ shift $((OPTIND-1))
 [ "$1" = "--" ] && shift
 
 
-if [ ! -d $BASE_PATH/bin ]; then
-    echo "${SCRIPT_NAME}: $BASE_PATH/bin does not exist or is not a directory" >&2
-    exit 1
-fi
-if [ ! -d $BASE_PATH/man ]; then
-    echo "${SCRIPT_NAME}: $BASE_PATH/man does not exist or is not a directory" >&2
-    exit 1
-fi
-if [ ! -d $CONF_PATH ]; then
-    echo "${SCRIPT_NAME}: $BASE_PATH/man does not exist or is not a directory" >&2
-    exit 1
-fi
+for p in "${BASE_PATH}/bin" "${BASE_PATH}/man" "${CONF_PATH}" ; do
+    if [ ! -d "$p" ]; then
+        echo "${SCRIPT_NAME}: $p does not exist or is not a directory" >&2
+        exit 1
+    fi
+done
 
 
 for toolname in $TOOLS ; do
