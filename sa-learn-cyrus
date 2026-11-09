@@ -29,8 +29,8 @@
 ################################################################################
 
 my $me = 'sa-learn-cyrus';
-my $VERSION = '0.4.0';
-my $lupdate = '2020-04-04';
+my $VERSION = '0.4.1';
+my $lupdate = '2026-11-09';
 my $author = 'hjb+MR';
 my $header = "$me-$VERSION ($author -- $lupdate)";
 my $basename = `basename $0`;
@@ -326,10 +326,11 @@ foreach my $mbx (sort @mailboxes) {
                     }
                 }
                 close($fh);
-                if ( $? == 0 ) {
+                my $status_code = $?;
+                if (( $status_code == 0 ) || ( $status_code == (1<<8) )) {
                     $do_purge = 1;
                 } else {
-                    log_msg('error', "  Learning $learn using command '$cmd' failed: $?");
+                    log_msg('error', "  Learning $learn using command '$cmd' failed: $status_code");
                 }
             } else {
                 log_msg('error', "  Failed to run sa:learn_cmd '$cmd': $!");
@@ -364,8 +365,9 @@ if ( ($conf{'sa:bayes_storage'} eq 'berkely') and ($conf{'sa:fix_db_permissions'
                     log_msg('notice', "  chown> $_");
                 }
                 close($fh);
-                if ( $? != 0 ) {
-                    log_msg('error', "  Changing ownership of '$tokens' using command '$cmd' failed: $?");
+                my $status_code = $?;
+                if ( $status_code != 0 ) {
+                    log_msg('error', "  Changing ownership of '$tokens' using command '$cmd' failed: $status_code");
                 }
             } else {
                 log_msg('error', "  Changing ownership of '$tokens' using command '$cmd' failed: open failed");
@@ -781,8 +783,9 @@ sub purge_mailbox_folder {
             log_msg('debug', "  ipurge> $_") unless /Permission denied/;
         }
         close($fh);
-        if ( $? != 0 ) {
-            log_msg('error', "  Purging messages from folder '$folder' using command '$cmd' failed: $?");
+        my $status_code = $?;
+        if ( $status_code != 0 ) {
+            log_msg('error', "  Purging messages from folder '$folder' using command '$cmd' failed: $status_code");
         }
     } else {
         log_msg('error', "  Failed to run imap:purge_cmd '$cmd': $!");
